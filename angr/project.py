@@ -92,7 +92,7 @@ class Project:
     :type storage:      defaultdict(list)
     """
 
-    analyses: "AnalysesHub"
+    analyses: "AnalysesHubWithDefault"
     arch: archinfo.Arch
 
     def __init__(
@@ -497,6 +497,14 @@ class Project:
         if callable(hook):
             hook = SIM_PROCEDURES["stubs"]["UserHook"](user_func=hook, length=length, **kwargs)
 
+        # if not hook.is_stub and hook.guessed_prototype:
+        #    l.error(
+        #        "You need to instantiate %s with a prototype. "
+        #        "It will attempt to guess one but the consequences of guessing wrong are dire.",
+        #        hook,
+        #    )
+        #    l.error("Consider also using angr.SIM_LIBRARIES instead of angr.SIM_PROCEDURES or angr.procedures.")
+
         self._sim_procedures[addr] = hook
 
     def is_hooked(self, addr) -> bool:
@@ -596,7 +604,7 @@ class Project:
         sym = self.loader.find_symbol(symbol_name)
         if sym is None:
             l.warning("Could not find symbol %s", symbol_name)
-            return False
+            return None
         hook_addr, _ = self.simos.prepare_function_symbol(symbol_name, basic_addr=sym.rebased_addr)
         return self.hooked_by(hook_addr)
 
@@ -802,6 +810,6 @@ class Project:
 
 from .factory import AngrObjectFactory
 from angr.simos import SimOS, os_mapping
-from .analyses.analysis import AnalysesHub
+from .analyses.analysis import AnalysesHub, AnalysesHubWithDefault
 from .knowledge_base import KnowledgeBase
 from .procedures import SIM_PROCEDURES, SIM_LIBRARIES

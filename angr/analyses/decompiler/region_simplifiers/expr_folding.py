@@ -3,10 +3,9 @@ from collections import defaultdict
 from typing import Optional, Any, Dict, Set, Tuple, Iterable, DefaultDict, TYPE_CHECKING
 
 import ailment
-from ailment import Expression, Block
+from ailment import Expression, Block, AILBlockWalker
 from ailment.statement import Statement, Assignment, Call
 
-from ..ailblock_walker import AILBlockWalker
 from ..sequence_walker import SequenceWalker
 from ..structuring.structurer_nodes import (
     ConditionNode,
@@ -156,7 +155,7 @@ class ExpressionUseFinder(AILBlockWalker):
 
     def __init__(self):
         super().__init__()
-        self.uses = defaultdict(set)
+        self.uses: DefaultDict[SimVariable, Set[Tuple[Expression, Optional[ExpressionLocation]]]] = defaultdict(set)
         self.has_load = False
 
     def _handle_expr(
@@ -196,7 +195,7 @@ class ExpressionCounter(SequenceWalker):
         # the current assignment depends on, StatementLocation of the assignment statement, a Boolean variable that
         # indicates if ExpressionUseFinder has succeeded or not)
         self.assignments: DefaultDict[Any, Set[Tuple]] = defaultdict(set)
-        self.uses = {}
+        self.uses: Dict[SimVariable, Set[Tuple[Expression, Optional[LocationBase]]]] = {}
         self._variable_manager: "VariableManagerInternal" = variable_manager
 
         super().__init__(handlers)

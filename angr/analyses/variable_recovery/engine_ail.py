@@ -6,7 +6,7 @@ import claripy
 import ailment
 
 from ...calling_conventions import SimRegArg
-from ...sim_type import SimTypeFunction, SimTypeBottom
+from ...sim_type import SimTypeFunction
 from ...engines.light import SimEngineLightAILMixin
 from ..typehoon import typeconsts, typevars
 from ..typehoon.lifter import TypeLifter
@@ -23,7 +23,12 @@ class SimEngineVRAIL(
     SimEngineLightAILMixin,
     SimEngineVRBase,
 ):
+    """
+    The engine for variable recovery on AIL.
+    """
+
     state: "VariableRecoveryFastState"
+    block: ailment.Block
 
     def __init__(self, *args, call_info=None, **kwargs):
         super().__init__(*args, **kwargs)
@@ -80,6 +85,7 @@ class SimEngineVRAIL(
         ret_reg_offset = None
         ret_expr_bits = self.state.arch.bits
         ret_val = None  # stores the value that this method should return to its caller when this is a call expression.
+        create_variable = True
         if not is_expr:
             # this is a call statement. we need to update the return value register later
             ret_expr: Optional[ailment.Expr.Register] = stmt.ret_expr
@@ -87,13 +93,11 @@ class SimEngineVRAIL(
                 ret_reg_offset = ret_expr.reg_offset
                 ret_expr_bits = ret_expr.bits
             else:
+                # the return expression is not used, so we treat this call as not returning anything
                 if stmt.calling_convention is not None:
+                    # we only set the ret_expr if prototype must be guessed. otherwise ret_expr should just be None
                     if stmt.prototype is None:
                         ret_expr: SimRegArg = stmt.calling_convention.RETURN_VAL
-                    elif stmt.prototype.returnty is None or type(stmt.prototype.returnty) is SimTypeBottom:
-                        ret_expr = None
-                    else:
-                        ret_expr: SimRegArg = stmt.calling_convention.return_val(stmt.prototype.returnty)
                 else:
                     l.debug(
                         "Unknown calling convention for function %s. Fall back to default calling convention.", target
@@ -102,6 +106,7 @@ class SimEngineVRAIL(
 
                 if ret_expr is not None:
                     ret_reg_offset = self.project.arch.registers[ret_expr.reg_name][0]
+                create_variable = False
         else:
             # this is a call expression. we just return the value at the end of this method
             if stmt.ret_expr is not None:
@@ -141,8 +146,9 @@ class SimEngineVRAIL(
                 self._assign_to_register(
                     ret_reg_offset,
                     RichR(self.state.top(expr_bits), typevar=ret_ty),
-                    self.state.arch.bytes,
+                    expr_bits // self.arch.byte_width,
                     dst=ret_expr,
+                    create_variable=create_variable,
                 )
 
         if prototype is not None and args:
@@ -214,7 +220,7 @@ class SimEngineVRAIL(
                 )
             else:
                 ty = typeconsts.int_type(expr.size * self.state.arch.byte_width)
-            v = claripy.BVV(expr.value, expr.size * self.state.arch.byte_width)
+            v = claripy.BVV(expr.value, expr.bits)
         r = RichR(v, typevar=ty)
         self._reference(r, self._codeloc())
         return r

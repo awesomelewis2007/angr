@@ -18,11 +18,14 @@ from angr.analyses import (
 from angr.analyses.decompiler.optimization_passes.expr_op_swapper import OpDescriptor
 from angr.analyses.decompiler.decompilation_options import get_structurer_option
 from angr.analyses.decompiler.structuring import STRUCTURER_CLASSES
+from angr.misc.testing import is_testing
 
 test_location = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", "binaries", "tests")
 l = logging.Logger(__name__)
 
-WORKER = bool(os.environ.get("WORKER", False))  # this variable controls whether we print the decompilation code or not
+WORKER = is_testing or bool(
+    os.environ.get("WORKER", False)
+)  # this variable controls whether we print the decompilation code or not
 
 
 def for_all_structuring_algos(func):
@@ -550,9 +553,9 @@ class TestDecompiler(unittest.TestCase):
             if "convert(" in line:
                 # the previous line must be a curly brace
                 assert i > 0
-                assert code_lines[i - 1] == "{", (
-                    "Some arguments to convert() are probably not folded into this call " "statement."
-                )
+                assert (
+                    code_lines[i - 1] == "{"
+                ), "Some arguments to convert() are probably not folded into this call statement."
                 break
         else:
             assert False, "Call to convert() is not found in decompilation output."
@@ -1270,6 +1273,9 @@ class TestDecompiler(unittest.TestCase):
         assert "extern char num_packets;" in d.codegen.text
         assert "extern char src;" in d.codegen.text
 
+        # make sure there are no unidentified stack variables
+        assert "stack_base" not in d.codegen.text
+
         lines = [line.strip(" ") for line in d.codegen.text.split("\n")]
 
         # make sure the line with printf("Recieved packet %d for connection with %d\n"...) does not have
@@ -1289,6 +1295,27 @@ class TestDecompiler(unittest.TestCase):
         for line in lines:
             for m in re.finditer(r"connection_infos", line):
                 assert line[m.end()] == "["
+
+    @for_all_structuring_algos
+    def test_decompiling_fmt_put_space(self, decompiler_options=None):
+        bin_path = os.path.join(test_location, "x86_64", "decompiler", "fmt")
+        proj = angr.Project(bin_path, auto_load_libs=False)
+
+        cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
+
+        f = proj.kb.functions["put_space"]
+        proj.analyses.VariableRecoveryFast(f)
+        cca = proj.analyses.CallingConvention(f)
+        f.prototype = cca.prototype
+        f.calling_convention = cca.cc
+
+        d = proj.analyses.Decompiler(f, cfg=cfg.model, options=decompiler_options)
+        self._print_decompilation_result(d)
+
+        # bitshifts should be properly simplified into signed divisions
+        assert "/ 8" in d.codegen.text
+        assert "* 8" in d.codegen.text
+        assert ">>" not in d.codegen.text
 
     @for_all_structuring_algos
     def test_decompiling_fmt_get_space(self, decompiler_options=None):
@@ -1825,13 +1852,18 @@ class TestDecompiler(unittest.TestCase):
                     all_labels.add(m.group(0)[:-1])
                 for m in re.finditer(r"goto ([^;]+);", d.codegen.text):
                     all_gotos.add(m.group(1))
-                assert len(all_labels) == 1
-                assert len(all_gotos) == 1
+                assert len(all_labels) == 2
+                assert len(all_gotos) == 2
                 assert all_labels == all_gotos
             else:
                 # dream
                 assert "LABEL_" not in d.codegen.text
                 assert "goto" not in d.codegen.text
+
+            # ensure all return values are still there
+            assert "1;" in d.codegen.text
+            assert "0;" in d.codegen.text
+            assert "-1;" in d.codegen.text or "4294967295" in d.codegen.text
 
     @structuring_algo("phoenix")
     def test_decompiling_split_lines_split(self, decompiler_options=None):
@@ -2203,6 +2235,16 @@ class TestDecompiler(unittest.TestCase):
         assert (
             "> 118" not in d.codegen.text and ">= 119" not in d.codegen.text
         )  # > 118 (>= 119) goes to the default case
+        assert "case 65:" in d.codegen.text
+        assert "case 69:" in d.codegen.text
+        assert "case 84:" in d.codegen.text
+        assert "case 98:" in d.codegen.text
+        assert "case 101:" in d.codegen.text
+        assert "case 110:" in d.codegen.text
+        assert "case 115:" in d.codegen.text
+        assert "case 116:" in d.codegen.text
+        assert "case 117:" in d.codegen.text
+        assert "case 118:" in d.codegen.text
 
     @structuring_algo("phoenix")
     def test_comma_separated_statement_expression_whoami(self, decompiler_options=None):

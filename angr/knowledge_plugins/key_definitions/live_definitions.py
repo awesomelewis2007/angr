@@ -7,13 +7,14 @@ from collections import defaultdict
 import claripy
 from claripy.annotation import Annotation
 import archinfo
+from archinfo.arch import Endness
 
 from ...errors import SimMemoryMissingError, SimMemoryError
 from ...storage.memory_mixins import MultiValuedMemory
 from ...storage.memory_mixins.paged_memory.pages.multi_values import MultiValues
 from ...engines.light import SpOffset
 from ...code_location import CodeLocation
-from .atoms import Atom, Register, MemoryLocation, Tmp, FunctionCall, ConstantSrc
+from .atoms import Atom, Register, MemoryLocation, Tmp, ConstantSrc
 from .definition import Definition, Tag
 from .heap_address import HeapAddress
 from .uses import Uses
@@ -119,6 +120,7 @@ class LiveDefinitions:
                 top_func=self.top,
                 skip_missing_values_during_merging=False,
                 page_kwargs={"mo_cmp": self._mo_cmp},
+                endness=self.arch.register_endness,
             )
             if register_definitions is None
             else register_definitions
@@ -168,6 +170,22 @@ class LiveDefinitions:
         self.tmp_uses: Dict[int, Set[CodeLocation]] = defaultdict(set) if tmp_uses is None else tmp_uses
 
         self.uses_by_codeloc: Dict[CodeLocation, Set[Definition]] = defaultdict(set)
+
+    @property
+    def registers(self) -> MultiValuedMemory:
+        return self.register_definitions
+
+    @property
+    def stack(self) -> MultiValuedMemory:
+        return self.stack_definitions
+
+    @property
+    def memory(self) -> MultiValuedMemory:
+        return self.memory_definitions
+
+    @property
+    def heap(self) -> MultiValuedMemory:
+        return self.heap_definitions
 
     def __repr__(self):
         ctnt = "LiveDefs"
@@ -450,7 +468,12 @@ class LiveDefinitions:
         # set_object() replaces kill (not implemented) and add (add) in one step
         if isinstance(atom, Register):
             try:
-                self.register_definitions.store(atom.reg_offset, d, size=atom.size, endness=endness)
+                self.register_definitions.store(
+                    atom.reg_offset,
+                    d,
+                    size=atom.size,
+                    endness=endness,
+                )
             except SimMemoryError:
                 l.warning("Failed to store register definition %s at %d.", d, atom.reg_offset, exc_info=True)
         elif isinstance(atom, MemoryLocation):
@@ -523,14 +546,11 @@ class LiveDefinitions:
                 pass
         elif type(definition.atom) is Tmp:
             self.add_tmp_use_by_def(definition, code_loc)
-        elif type(definition.atom) is FunctionCall:
-            # ignore function calls
-            pass
         elif type(definition.atom) is ConstantSrc:
             # ignore constants
             pass
         else:
-            raise TypeError()
+            raise TypeError("Unsupported atom type %s." % type(definition.atom))
 
     def get_definitions(self, atom: Atom) -> Iterable[Definition]:
         if isinstance(atom, Register):
@@ -547,7 +567,7 @@ class LiveDefinitions:
         elif isinstance(atom, Tmp):
             yield from self.get_tmp_definitions(atom.tmp_idx)
         else:
-            raise TypeError()
+            raise TypeError("Unsupported atom type %s." % type(atom))
 
     def get_tmp_definitions(self, tmp_idx: int) -> Iterable[Definition]:
         if tmp_idx in self.tmps:
@@ -555,18 +575,27 @@ class LiveDefinitions:
         else:
             return
 
-    def get_register_definitions(self, reg_offset: int, size: int) -> Iterable[Definition]:
+    def get_register_definitions(self, reg_offset: int, size: int, endness=None) -> Iterable[Definition]:
         try:
-            values: MultiValues = self.register_definitions.load(reg_offset, size=size)
+            values: MultiValues = self.register_definitions.load(
+                reg_offset,
+                size=size,
+                endness=endness,
+            )
         except SimMemoryMissingError:
             return
         yield from LiveDefinitions.extract_defs_from_mv(values)
 
-    def get_stack_definitions(self, stack_offset: int, size: int, endness) -> Iterable[Definition]:
+    def get_stack_values(self, stack_offset: int, size: int, endness: Endness) -> Optional[MultiValues]:
         stack_addr = self.stack_offset_to_stack_addr(stack_offset)
         try:
-            mv: MultiValues = self.stack_definitions.load(stack_addr, size=size, endness=endness)
+            return self.stack_definitions.load(stack_addr, size=size, endness=endness)
         except SimMemoryMissingError:
+            return None
+
+    def get_stack_definitions(self, stack_offset: int, size: int, endness) -> Iterable[Definition]:
+        mv = self.get_stack_values(stack_offset, size, endness)
+        if not mv:
             return
         yield from LiveDefinitions.extract_defs_from_mv(mv)
 
@@ -590,8 +619,14 @@ class LiveDefinitions:
             result |= set(self.get_definitions(atom))
         return result
 
-    def get_value_from_definition(self, definition: Definition) -> MultiValues:
+    def get_value_from_definition(self, definition: Definition) -> Optional[MultiValues]:
         return self.get_value_from_atom(definition.atom)
+
+    def get_one_value_from_definition(self, definition: Definition) -> Optional[claripy.ast.base.Base]:
+        return self.get_one_value_from_atom(definition.atom)
+
+    def get_concrete_value_from_definition(self, definition: Definition) -> Optional[int]:
+        return self.get_concrete_value_from_atom(definition.atom)
 
     def get_value_from_atom(self, atom: Atom) -> Optional[MultiValues]:
         if isinstance(atom, Register):
@@ -621,6 +656,38 @@ class LiveDefinitions:
                 return None
         else:
             return None
+
+    def get_one_value_from_atom(self, atom: Atom) -> Optional[claripy.ast.base.Base]:
+        r = self.get_value_from_atom(atom)
+        if r is None:
+            return None
+        return r.one_value()
+
+    def get_concrete_value_from_atom(self, atom: Atom) -> Optional[int]:
+        r = self.get_one_value_from_atom(atom)
+        if r is None:
+            return None
+        if r.symbolic:
+            return None
+        return r.concrete_value
+
+    def get_values(self, spec: Union[Atom, Definition]) -> Optional[MultiValues]:
+        if isinstance(spec, Atom):
+            return self.get_value_from_atom(spec)
+        else:
+            return self.get_value_from_definition(spec)
+
+    def get_one_value(self, spec: Union[Atom, Definition]) -> Optional[claripy.ast.base.Base]:
+        if isinstance(spec, Atom):
+            return self.get_one_value_from_atom(spec)
+        else:
+            return self.get_one_value_from_definition(spec)
+
+    def get_concrete_value(self, spec: Union[Atom, Definition]) -> Optional[int]:
+        if isinstance(spec, Atom):
+            return self.get_concrete_value_from_atom(spec)
+        else:
+            return self.get_concrete_value_from_definition(spec)
 
     def add_register_use(self, reg_offset: int, size: int, code_loc: CodeLocation, expr: Optional[Any] = None) -> None:
         # get all current definitions

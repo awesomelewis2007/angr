@@ -242,7 +242,7 @@ class SimEngineVRBase(SimEngineLight):
                 offset = None
             variable_manager.reference_at(var, offset, codeloc, atom=src)
 
-    def _assign_to_register(self, offset, richr, size, src=None, dst=None):
+    def _assign_to_register(self, offset, richr, size, src=None, dst=None, create_variable: bool = True):
         """
 
         :param int offset:
@@ -251,7 +251,7 @@ class SimEngineVRBase(SimEngineLight):
         :return:
         """
 
-        if offset in (self.arch.ip_offset, self.arch.sp_offset, self.arch.lr_offset):
+        if offset in (self.arch.ip_offset, self.arch.sp_offset, self.arch.lr_offset) or not create_variable:
             # only store the value. don't worry about variables.
             v = MultiValues(richr.data)
             self.state.register_region.store(offset, v)
@@ -375,7 +375,9 @@ class SimEngineVRBase(SimEngineLight):
             stack_addr = self.state.stack_addr_from_offset(stack_offset)
             self.state.stack_region.store(stack_addr, expr, endness=endness)
 
-            codeloc = CodeLocation(self.block.addr, self.stmt_idx, ins_addr=self.ins_addr)
+            codeloc = CodeLocation(
+                self.block.addr, self.stmt_idx, ins_addr=self.ins_addr, block_idx=getattr(self.block, "idx", None)
+            )
 
             addr_and_variables = set()
             try:
@@ -455,7 +457,9 @@ class SimEngineVRBase(SimEngineLight):
                 addr, data_expr, endness=self.state.arch.memory_endness if stmt is None else stmt.endness
             )
 
-        codeloc = CodeLocation(self.block.addr, self.stmt_idx, ins_addr=self.ins_addr)
+        codeloc = CodeLocation(
+            self.block.addr, self.stmt_idx, ins_addr=self.ins_addr, block_idx=getattr(self.block, "idx", None)
+        )
         values = None
         if abs_addr is not None:
             try:
@@ -556,7 +560,9 @@ class SimEngineVRBase(SimEngineLight):
         """
 
         addr: claripy.ast.Base = richr_addr.data
-        codeloc = CodeLocation(self.block.addr, self.stmt_idx, ins_addr=self.ins_addr)
+        codeloc = CodeLocation(
+            self.block.addr, self.stmt_idx, ins_addr=self.ins_addr, block_idx=getattr(self.block, "idx", None)
+        )
         typevar = None
 
         if self.state.is_stack_address(addr):
@@ -765,7 +771,9 @@ class SimEngineVRBase(SimEngineLight):
             l.debug("Identified a new global variable %s at %#x.", variable, self.ins_addr)
             existing_vars = {(variable, (offset, elem_size))}
 
-        codeloc = CodeLocation(self.block.addr, self.stmt_idx, ins_addr=self.ins_addr)
+        codeloc = CodeLocation(
+            self.block.addr, self.stmt_idx, ins_addr=self.ins_addr, block_idx=getattr(self.block, "idx", None)
+        )
         for variable, _ in existing_vars:
             variable_manager.read_from(variable, None, codeloc, atom=expr)
 
@@ -798,7 +806,7 @@ class SimEngineVRBase(SimEngineLight):
 
         return RichR(self.state.top(size * self.state.arch.byte_width), typevar=typevar)
 
-    def _read_from_register(self, offset, size, expr=None):
+    def _read_from_register(self, offset, size, expr=None, force_variable_size=None, create_variable: bool = True):
         """
 
         :param offset:
@@ -822,18 +830,19 @@ class SimEngineVRBase(SimEngineLight):
             return RichR(r_value, variable=None, typevar=None)
 
         if not values:
-            # the value does not exist. create a new variable
-            variable = SimRegisterVariable(
-                offset,
-                size,
-                ident=self.variable_manager[self.func_addr].next_variable_ident("register"),
-                region=self.func_addr,
-            )
+            # the value does not exist.
             value = self.state.top(size * self.state.arch.byte_width)
-            value = self.state.annotate_with_variables(value, [(0, variable)])
+            if create_variable:
+                # create a new variable if necessary
+                variable = SimRegisterVariable(
+                    offset,
+                    size if force_variable_size is None else force_variable_size,
+                    ident=self.variable_manager[self.func_addr].next_variable_ident("register"),
+                    region=self.func_addr,
+                )
+                value = self.state.annotate_with_variables(value, [(0, variable)])
+                self.variable_manager[self.func_addr].add_variable("register", offset, variable)
             self.state.register_region.store(offset, value)
-            self.variable_manager[self.func_addr].add_variable("register", offset, variable)
-
             value_list = [{value}]
         else:
             value_list = list(values.values())

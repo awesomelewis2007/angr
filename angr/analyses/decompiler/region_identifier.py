@@ -10,9 +10,9 @@ from ailment import Block
 from ailment.statement import ConditionalJump, Jump
 from ailment.expression import Const
 
+from angr.utils.graph import GraphUtils
 from ...utils.graph import dfs_back_edges, subgraph_between_nodes, dominates, shallow_reverse
 from .. import Analysis, register_analysis
-from ..cfg.cfg_utils import CFGUtils
 from .structuring.structurer_nodes import MultiNode, ConditionNode, IncompleteSwitchCaseHeadStatement
 from .graph_region import GraphRegion
 from .condition_processor import ConditionProcessor
@@ -44,7 +44,9 @@ class RegionIdentifier(Analysis):
             cond_proc
             if cond_proc is not None
             else ConditionProcessor(
-                self.project.arch if self.project is not None else None  # it's only None in test cases
+                self.project.arch
+                if getattr(self, "project", None) is not None
+                else None  # it's only None in test cases
             )
         )
         self._graph = graph if graph is not None else self.function.graph
@@ -187,7 +189,7 @@ class RegionIdentifier(Analysis):
 
     def _find_loop_headers(self, graph: networkx.DiGraph) -> List:
         heads = {t for _, t in dfs_back_edges(graph, self._start_node)}
-        return CFGUtils.quasi_topological_sort_nodes(graph, heads)
+        return GraphUtils.quasi_topological_sort_nodes(graph, heads)
 
     def _find_initial_loop_nodes(self, graph: networkx.DiGraph, head):
         # TODO optimize
@@ -242,7 +244,7 @@ class RegionIdentifier(Analysis):
         # node.
         subgraph = networkx.DiGraph()
 
-        sorted_refined_exit_nodes = CFGUtils.quasi_topological_sort_nodes(graph, refined_exit_nodes)
+        sorted_refined_exit_nodes = GraphUtils.quasi_topological_sort_nodes(graph, refined_exit_nodes)
         while len(sorted_refined_exit_nodes) > 1 and new_exit_nodes:
             # visit each node in refined_exit_nodes once and determine which nodes to consider as loop nodes
             candidate_nodes = {}
@@ -276,7 +278,7 @@ class RegionIdentifier(Analysis):
 
             sorted_refined_exit_nodes += list(new_exit_nodes)
             sorted_refined_exit_nodes = list(set(sorted_refined_exit_nodes))
-            sorted_refined_exit_nodes = CFGUtils.quasi_topological_sort_nodes(graph, sorted_refined_exit_nodes)
+            sorted_refined_exit_nodes = GraphUtils.quasi_topological_sort_nodes(graph, sorted_refined_exit_nodes)
 
         refined_exit_nodes = set(sorted_refined_exit_nodes)
         refined_loop_nodes = refined_loop_nodes - refined_exit_nodes

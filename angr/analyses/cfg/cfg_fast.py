@@ -39,7 +39,7 @@ from angr.errors import (
     SimIRSBNoDecodeError,
 )
 from angr.utils.constants import DEFAULT_STATEMENT
-from angr.analyses.forward_analysis import ForwardAnalysis
+from angr.analyses import ForwardAnalysis
 from .cfg_arch_options import CFGArchOptions
 from .cfg_base import CFGBase
 from .segment_list import SegmentList
@@ -1269,6 +1269,12 @@ class CFGFast(ForwardAnalysis, CFGBase):  # pylint: disable=abstract-method
                 pass
             else:
                 # it's outside permitted regions. skip.
+                if job.jumpkind == "Ijk_Call":
+                    # still add call edges so we will not lose track of the functions later, especially in decompiler
+                    _, _, cfg_node, _ = self._generate_cfgnode(job, job.func_addr)
+                    if cfg_node is not None:
+                        self._graph_add_edge(cfg_node, job.src_node, job.jumpkind, job.src_ins_addr, job.src_stmt_idx)
+                    job.apply_function_edges(self, clear=True)
                 raise AngrSkipJobNotice()
 
         # Do not calculate progress if the user doesn't care about the progress at all
@@ -1760,9 +1766,12 @@ class CFGFast(ForwardAnalysis, CFGBase):  # pylint: disable=abstract-method
                     None,
                     None,
                 )
-                if namehint and addr_ not in self.kb.labels:
-                    unique_label = self.kb.labels.get_unique_label(namehint)
-                    self.kb.labels[addr_] = unique_label
+                if namehint:
+                    if addr_ not in self.kb.labels or self.kb.labels[addr_] in {
+                        "_ftext",
+                    }:
+                        unique_label = self.kb.labels.get_unique_label(namehint)
+                        self.kb.labels[addr_] = unique_label
 
         # determine if this procedure returns
         if procedure.DYNAMIC_RET:
@@ -3304,8 +3313,14 @@ class CFGFast(ForwardAnalysis, CFGBase):  # pylint: disable=abstract-method
 
                     del self._function_returns[nonreturning_function.addr]
 
-    def _pop_pending_job(self, returning=True):
-        return self._pending_jobs.pop_job(returning=returning)
+    def _pop_pending_job(self, returning=True) -> Optional[CFGJob]:
+        while self._pending_jobs:
+            job = self._pending_jobs.pop_job(returning=returning)
+            if job is not None and job.job_type == CFGJobType.DATAREF_HINTS and self._seg_list.is_occupied(job.addr):
+                # ignore this hint from data refs because the target address has already been analyzed
+                continue
+            return job
+        return None
 
     def _clean_pending_exits(self):
         self._pending_jobs.cleanup()

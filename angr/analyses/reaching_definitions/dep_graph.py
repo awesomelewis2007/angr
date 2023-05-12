@@ -1,5 +1,6 @@
-from typing import Optional, Dict, Set, Iterable, Union, List
+from typing import Optional, Dict, Set, Iterable, Union, List, TYPE_CHECKING, Tuple, overload, Literal, Any
 from functools import reduce
+from dataclasses import dataclass
 
 import networkx
 
@@ -7,15 +8,36 @@ import claripy
 from cle.loader import Loader
 
 from ...code_location import CodeLocation
-from ...knowledge_plugins.key_definitions.atoms import Atom, MemoryLocation
-from ...knowledge_plugins.key_definitions.definition import Definition
+from ...knowledge_plugins.key_definitions.atoms import (
+    Atom,
+    MemoryLocation,
+    AtomKind,
+    Register,
+    Tmp,
+    ConstantSrc,
+    GuardUse,
+)
+from ...knowledge_plugins.key_definitions.definition import Definition, DefinitionMatchPredicate
 from ...knowledge_plugins.key_definitions.undefined import UNDEFINED
 from ...knowledge_plugins.cfg import CFGModel
 from .external_codeloc import ExternalCodeLocation
 
+if TYPE_CHECKING:
+    pass
+
 
 def _is_definition(node):
     return isinstance(node, Definition)
+
+
+@dataclass
+class FunctionCallRelationships:  # TODO this doesn't belong in this file anymore
+    callsite: CodeLocation
+    target: Optional[int]
+    args_defns: List[Set[Definition]]
+    other_input_defns: Set[Definition]
+    ret_defns: Set[Definition]
+    other_output_defns: Set[Definition]
 
 
 class DepGraph:
@@ -185,3 +207,163 @@ class DepGraph:
             )
 
             self.graph.add_edge(memory_location_definition, definition)
+
+    def find_definitions(self, **kwargs) -> List[Definition]:
+        """
+        Filter the definitions present in the graph based on various criteria.
+        Parameters can be any valid keyword args to `DefinitionMatchPredicate`
+        """
+        predicate = DefinitionMatchPredicate.construct(**kwargs)
+        result = []
+        defn: Definition
+        for defn in self.nodes():
+            if predicate.matches(defn):
+                result.append(defn)
+        return result
+
+    @overload
+    def find_all_predecessors(
+        self,
+        starts: Union[Definition[Atom], Iterable[Definition[Atom]]],
+        kind: Literal[AtomKind.REGISTER] = ...,
+        **kwargs: Any,
+    ) -> List[Definition[Register]]:
+        ...
+
+    @overload
+    def find_all_predecessors(
+        self,
+        starts: Union[Definition[Atom], Iterable[Definition[Atom]]],
+        kind: Literal[AtomKind.MEMORY] = ...,
+        **kwargs: Any,
+    ) -> List[Definition[MemoryLocation]]:
+        ...
+
+    @overload
+    def find_all_predecessors(
+        self,
+        starts: Union[Definition[Atom], Iterable[Definition[Atom]]],
+        kind: Literal[AtomKind.TMP] = ...,
+        **kwargs: Any,
+    ) -> List[Definition[Tmp]]:
+        ...
+
+    @overload
+    def find_all_predecessors(
+        self,
+        starts: Union[Definition[Atom], Iterable[Definition[Atom]]],
+        kind: Literal[AtomKind.CONSTANT] = ...,
+        **kwargs: Any,
+    ) -> List[Definition[ConstantSrc]]:
+        ...
+
+    @overload
+    def find_all_predecessors(
+        self,
+        starts: Union[Definition[Atom], Iterable[Definition[Atom]]],
+        kind: Literal[AtomKind.GUARD] = ...,
+        **kwargs: Any,
+    ) -> List[Definition[GuardUse]]:
+        ...
+
+    @overload
+    def find_all_predecessors(
+        self,
+        starts: Union[Definition[Atom], Iterable[Definition[Atom]]],
+        reg_name: Union[int, str] = ...,
+        **kwargs: Any,
+    ) -> List[Definition[Register]]:
+        ...
+
+    @overload
+    def find_all_predecessors(
+        self, starts: Union[Definition[Atom], Iterable[Definition[Atom]]], stack_offset: int = ..., **kwargs: Any
+    ) -> List[Definition[MemoryLocation]]:
+        ...
+
+    @overload
+    def find_all_predecessors(
+        self, starts: Union[Definition[Atom], Iterable[Definition[Atom]]], const_val: int = ..., **kwargs: Any
+    ) -> List[Definition[ConstantSrc]]:
+        ...
+
+    def find_all_predecessors(self, starts, **kwargs):
+        """
+        Filter the ancestors of the given start node or nodes that match various criteria.
+        Parameters can be any valid keyword args to `DefinitionMatchPredicate`
+        """
+        predicate = DefinitionMatchPredicate.construct(**kwargs)
+        result = []
+        queue = [starts] if isinstance(starts, Definition) else list(starts)
+        seen = set(queue)
+        while queue:
+            thing = queue.pop()
+            for pred in self.graph.pred[thing]:
+                if pred in seen:
+                    continue
+                queue.append(pred)
+                seen.add(pred)
+                if predicate.matches(pred):
+                    result.append(pred)
+        return result
+
+    def find_all_successors(self, starts: Union[Definition, Iterable[Definition]], **kwargs) -> List[Definition]:
+        """
+        Filter the descendents of the given start node or nodes that match various criteria.
+        Parameters can be any valid keyword args to `DefinitionMatchPredicate`
+        """
+        predicate = DefinitionMatchPredicate.construct(**kwargs)
+        result = []
+        queue = [starts] if isinstance(starts, Definition) else list(starts)
+        seen = set(queue)
+        while queue:
+            thing = queue.pop()
+            for pred in self.graph.succ[thing]:
+                if pred in seen:
+                    continue
+                queue.append(pred)
+                seen.add(pred)
+                if predicate.matches(pred):
+                    result.append(pred)
+        return result
+
+    def find_path(
+        self, starts: Union[Definition, Iterable[Definition]], ends: Union[Definition, Iterable[Definition]], **kwargs
+    ) -> Optional[Tuple[Definition, ...]]:
+        """
+        Find a path between the given start node or nodes and the given end node or nodes.
+        All the intermediate steps in the path must match the criteria given in kwargs.
+        The kwargs can be any valid parameters to `DefinitionMatchPredicate`.
+
+        This algorithm has exponential time and space complexity. Use at your own risk.
+        Want to do better? Do it yourself or use networkx and eat the cost of indirection and/or cloning.
+        """
+        return next(self.find_paths(starts, ends, **kwargs), None)
+
+    def find_paths(
+        self, starts: Union[Definition, Iterable[Definition]], ends: Union[Definition, Iterable[Definition]], **kwargs
+    ) -> Iterable[Tuple[Definition, ...]]:
+        """
+        Find all non-overlapping simple paths between the given start node or nodes and the given end node or nodes.
+        All the intermediate steps in the path must match the criteria given in kwargs.
+        The kwargs can be any valid parameters to `DefinitionMatchPredicate`.
+
+        This algorithm has exponential time and space complexity. Use at your own risk.
+        Want to do better? Do it yourself or use networkx and eat the cost of indirection and/or cloning.
+        """
+        predicate = DefinitionMatchPredicate.construct(**kwargs)
+        ends = {ends} if isinstance(ends, Definition) else set(ends)
+        queue = [(starts,)] if isinstance(starts, Definition) else [(start,) for start in starts]
+        seen = set(queue)
+        while queue:
+            path = queue.pop()
+            for succ in self.graph.succ[path[-1]]:
+                newpath = path + (succ,)
+                if succ in ends:
+                    yield newpath
+                elif succ in seen:
+                    continue
+
+                seen.add(succ)
+                if predicate.matches(succ):
+                    queue.append(newpath)

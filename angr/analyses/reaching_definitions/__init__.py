@@ -1,15 +1,47 @@
 from typing import Set, Optional, Union, TYPE_CHECKING
 
 from ...knowledge_plugins.key_definitions import LiveDefinitions
+from ...knowledge_plugins.key_definitions.constants import ObservationPointType
+from ...knowledge_plugins.key_definitions.atoms import (
+    AtomKind,
+    Atom,
+    Register,
+    MemoryLocation,
+    Tmp,
+    GuardUse,
+    ConstantSrc,
+)
+from ...knowledge_plugins.key_definitions.definition import Definition
 from .. import register_analysis
-from .reaching_definitions import ReachingDefinitionsAnalysis
-
+from .reaching_definitions import ReachingDefinitionsAnalysis, ReachingDefinitionsModel
+from .function_handler import FunctionHandler, FunctionCallData
+from .external_codeloc import ExternalCodeLocation
+from .rd_state import ReachingDefinitionsState
 
 if TYPE_CHECKING:
-    from angr.knowledge_plugins.key_definitions.definition import Definition
     from angr.storage.memory_object import SimMemoryObject
     from angr.storage.memory_mixins import MultiValuedMemory
     from angr.storage.memory_mixins.paged_memory.pages import MVListPage
+
+__all__ = (
+    "LiveDefinitions",
+    "ObservationPointType",
+    "AtomKind",
+    "Atom",
+    "Register",
+    "MemoryLocation",
+    "Tmp",
+    "GuardUse",
+    "ConstantSrc",
+    "Definition",
+    "ReachingDefinitionsAnalysis",
+    "ReachingDefinitionsModel",
+    "ReachingDefinitionsState",
+    "FunctionHandler",
+    "FunctionCallData",
+    "get_all_definitions",
+    "ExternalCodeLocation",
+)
 
 
 def get_all_definitions(region: "MultiValuedMemory") -> Set["Definition"]:

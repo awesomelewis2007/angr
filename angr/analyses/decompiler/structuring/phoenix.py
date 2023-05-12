@@ -10,10 +10,10 @@ from ailment.block import Block
 from ailment.statement import Statement, ConditionalJump, Jump, Label
 from ailment.expression import Const, UnaryOp, MultiStatementExpression
 
+from angr.utils.graph import GraphUtils
 from ....knowledge_plugins.cfg import IndirectJumpType
 from ....utils.constants import SWITCH_MISSING_DEFAULT_NODE_ADDR
 from ....utils.graph import dominates, inverted_idoms, to_acyclic_graph
-from ...cfg.cfg_utils import CFGUtils
 from ..sequence_walker import SequenceWalker
 from ..utils import (
     remove_last_statement,
@@ -178,7 +178,7 @@ class PhoenixStructurer(StructurerBase):
     def _analyze_cyclic(self) -> bool:
         any_matches = False
         acyclic_graph = to_acyclic_graph(self._region.graph, loop_heads=[self._region.head])
-        for node in list(reversed(CFGUtils.quasi_topological_sort_nodes(acyclic_graph))):
+        for node in list(reversed(GraphUtils.quasi_topological_sort_nodes(acyclic_graph))):
             if node not in self._region.graph:
                 continue
             matched = self._match_cyclic_schemas(
@@ -491,7 +491,7 @@ class PhoenixStructurer(StructurerBase):
                 succ_while = result_while[-1]
                 succ_dowhile = result_dowhile[-1]
                 if succ_while in self._parent_region.graph and succ_dowhile in self._parent_region.graph:
-                    sorted_nodes = CFGUtils.quasi_topological_sort_nodes(
+                    sorted_nodes = GraphUtils.quasi_topological_sort_nodes(
                         self._parent_region.graph, loop_heads=[self._parent_region.head]
                     )
                     succ_while_idx = sorted_nodes.index(succ_while)
@@ -665,7 +665,7 @@ class PhoenixStructurer(StructurerBase):
         if len(continue_edges) > 1:
             # convert all but one (the one that is the farthest from the head, topological-wise) head-going edges into
             # continues
-            sorted_nodes = CFGUtils.quasi_topological_sort_nodes(
+            sorted_nodes = GraphUtils.quasi_topological_sort_nodes(
                 fullgraph, nodes=[src for src, _ in continue_edges], loop_heads=[loop_head]
             )
             src_to_ignore = sorted_nodes[-1]
@@ -841,7 +841,7 @@ class PhoenixStructurer(StructurerBase):
 
             self._assert_graph_ok(acyclic_graph, "Removed wrong edges")
 
-        for node in list(reversed(CFGUtils.quasi_topological_sort_nodes(acyclic_graph))):
+        for node in list(reversed(GraphUtils.quasi_topological_sort_nodes(acyclic_graph))):
             if node not in graph:
                 continue
             if graph.has_edge(node, head):
@@ -1376,8 +1376,14 @@ class PhoenixStructurer(StructurerBase):
                     edge_cond_right = self.cond_proc.recover_edge_condition(full_graph, start_node, right)
                     if claripy.is_true(claripy.Not(edge_cond_left) == edge_cond_right):
                         # c = !c
-                        new_cond_node = ConditionNode(start_node.addr, None, edge_cond_left, left, false_node=right)
-                        self._remove_last_statement_if_jump(start_node)
+                        last_if_jump = self._remove_last_statement_if_jump(start_node)
+                        new_cond_node = ConditionNode(
+                            last_if_jump.ins_addr if last_if_jump is not None else start_node.addr,
+                            None,
+                            edge_cond_left,
+                            left,
+                            false_node=right,
+                        )
                         new_node = SequenceNode(start_node.addr, nodes=[start_node, new_cond_node])
 
                         if not left_succs:
@@ -1412,8 +1418,14 @@ class PhoenixStructurer(StructurerBase):
                     edge_cond_right = self.cond_proc.recover_edge_condition(full_graph, start_node, right)
                     if claripy.is_true(claripy.Not(edge_cond_left) == edge_cond_right):
                         # c = !c
-                        new_cond_node = ConditionNode(start_node.addr, None, edge_cond_left, left, false_node=None)
-                        self._remove_last_statement_if_jump(start_node)
+                        last_if_jump = self._remove_last_statement_if_jump(start_node)
+                        new_cond_node = ConditionNode(
+                            last_if_jump.ins_addr if last_if_jump is not None else start_node.addr,
+                            None,
+                            edge_cond_left,
+                            left,
+                            false_node=None,
+                        )
                         new_node = SequenceNode(start_node.addr, nodes=[start_node, new_cond_node])
 
                         # on the original graph
@@ -1434,8 +1446,14 @@ class PhoenixStructurer(StructurerBase):
                     edge_cond_right = self.cond_proc.recover_edge_condition(full_graph, start_node, right)
                     if claripy.is_true(claripy.Not(edge_cond_left) == edge_cond_right):
                         # c = !c
-                        new_cond_node = ConditionNode(start_node.addr, None, edge_cond_left, left, false_node=None)
-                        self._remove_last_statement_if_jump(start_node)
+                        last_if_jump = self._remove_last_statement_if_jump(start_node)
+                        new_cond_node = ConditionNode(
+                            last_if_jump.ins_addr if last_if_jump is not None else start_node.addr,
+                            None,
+                            edge_cond_left,
+                            left,
+                            false_node=None,
+                        )
                         new_node = SequenceNode(start_node.addr, nodes=[start_node, new_cond_node])
 
                         # on the original graph
@@ -1461,7 +1479,17 @@ class PhoenixStructurer(StructurerBase):
                     edge_cond_right = self.cond_proc.recover_edge_condition(full_graph, start_node, right)
                     if claripy.is_true(claripy.Not(edge_cond_left) == edge_cond_right):
                         # c = !c
-                        new_cond_node = ConditionNode(start_node.addr, None, edge_cond_left, left, false_node=None)
+                        try:
+                            last_stmt = self.cond_proc.get_last_statement(start_node)
+                        except EmptyBlockNotice:
+                            last_stmt = None
+                        new_cond_node = ConditionNode(
+                            last_stmt.ins_addr if last_stmt is not None else start_node.addr,
+                            None,
+                            edge_cond_left,
+                            left,
+                            false_node=None,
+                        )
                         new_nodes = [start_node, new_cond_node]
                         if full_graph.in_degree[right] == 1:
                             # only remove the if statement when it will no longer be used later
@@ -1685,7 +1713,10 @@ class PhoenixStructurer(StructurerBase):
                     None, stmts, self.cond_proc.convert_claripy_bool_ast(right_left_cond), ins_addr=left.addr
                 )
                 memo[right_left_cond._hash] = mstmt_expr
-            cond = self.cond_proc.convert_claripy_bool_ast(claripy.And(left_cond, right_left_cond))
+            cond = self.cond_proc.convert_claripy_bool_ast(
+                claripy.And(left_cond, right_left_cond),
+                memo=memo,
+            )
             cond_jump = ConditionalJump(
                 None,
                 cond,
@@ -1898,7 +1929,7 @@ class PhoenixStructurer(StructurerBase):
                 if (src.addr, dst.addr) not in self.whitelist_edges:
                     other_edges.append((src, dst))
 
-        ordered_nodes = CFGUtils.quasi_topological_sort_nodes(acyclic_graph, loop_heads=[head])
+        ordered_nodes = GraphUtils.quasi_topological_sort_nodes(acyclic_graph, loop_heads=[head])
         node_seq = {nn: idx for (idx, nn) in enumerate(ordered_nodes)}
 
         if all_edges_wo_dominance:

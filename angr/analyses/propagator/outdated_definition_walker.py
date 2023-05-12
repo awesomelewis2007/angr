@@ -1,10 +1,9 @@
 from typing import Optional, Callable, TYPE_CHECKING
 
-from ailment import Block, Stmt, Expr
+from ailment import Block, Stmt, Expr, AILBlockWalker
 
 from ...errors import SimMemoryMissingError
 from ...code_location import CodeLocation
-from ..decompiler.ailblock_walker import AILBlockWalker
 
 if TYPE_CHECKING:
     from archinfo import Arch
@@ -65,16 +64,14 @@ class OutdatedDefinitionWalker(AILBlockWalker):
 
         # is the used register still alive at this point?
         try:
-            reg_vals: "MultiValues" = self.livedefs_defat.register_definitions.load(
-                expr.reg_offset, size=expr.size, endness=self.arch.register_endness
-            )
+            reg_vals: "MultiValues" = self.livedefs_defat.register_definitions.load(expr.reg_offset, size=expr.size)
             defs_defat = list(self.livedefs_defat.extract_defs_from_mv(reg_vals))
         except SimMemoryMissingError:
             defs_defat = []
 
         try:
             reg_vals: "MultiValues" = self.livedefs_currentloc.register_definitions.load(
-                expr.reg_offset, size=expr.size, endness=self.arch.register_endness
+                expr.reg_offset, size=expr.size
             )
             defs_currentloc = list(self.livedefs_currentloc.extract_defs_from_mv(reg_vals))
         except SimMemoryMissingError:

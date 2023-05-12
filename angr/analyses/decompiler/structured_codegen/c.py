@@ -113,6 +113,19 @@ def qualifies_for_implicit_cast(ty1, ty2):
 
 
 def extract_terms(expr: "CExpression") -> Tuple[int, List[Tuple[int, "CExpression"]]]:
+    # handle unnecessary type casts
+    if isinstance(expr, CTypeCast):
+        expr = MakeTypecastsImplicit.collapse(expr.dst_type, expr.expr)
+    if (
+        isinstance(expr, CTypeCast)
+        and isinstance(expr.dst_type, SimTypeInt)
+        and isinstance(expr.src_type, SimTypeInt)
+        and expr.dst_type.size == expr.src_type.size
+        and expr.dst_type.signed != expr.src_type.signed
+    ):
+        # (unsigned int)(a + 60)  ==>  a + 60, assuming a + 60 is an int
+        expr = expr.expr
+
     if isinstance(expr, CConstant):
         return expr.value, []
     # elif isinstance(expr, CUnaryOp) and expr.op == 'Minus'
@@ -311,6 +324,8 @@ class CFunction(CConstruct):  # pylint:disable=abstract-method
         "variables_in_use",
         "variable_manager",
         "demangled_name",
+        "unified_local_vars",
+        "show_demangled_name",
     )
 
     def __init__(
@@ -323,6 +338,7 @@ class CFunction(CConstruct):  # pylint:disable=abstract-method
         variables_in_use,
         variable_manager,
         demangled_name=None,
+        show_demangled_name=True,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -335,17 +351,10 @@ class CFunction(CConstruct):  # pylint:disable=abstract-method
         self.variables_in_use = variables_in_use
         self.variable_manager: "VariableManagerInternal" = variable_manager
         self.demangled_name = demangled_name
+        self.unified_local_vars: Dict[SimVariable, Set[Tuple[CVariable, SimType]]] = self.get_unified_local_vars()
+        self.show_demangled_name = show_demangled_name
 
-    def variable_list_repr_chunks(self, indent=0):
-        def _varname_to_id(varname: str) -> int:
-            # extract id from default variable name "v{id}"
-            if varname.startswith("v"):
-                try:
-                    return int(varname[1:])
-                except ValueError:
-                    pass
-            return 0
-
+    def get_unified_local_vars(self) -> Dict[SimVariable, Set[Tuple["CVariable", SimType]]]:
         unified_to_var_and_types: Dict[SimVariable, Set[Tuple[CVariable, SimType]]] = defaultdict(set)
 
         arg_set: Set[SimVariable] = set()
@@ -379,10 +388,22 @@ class CFunction(CConstruct):  # pylint:disable=abstract-method
 
             unified_to_var_and_types[key].add((cvar, var_type))
 
+        return unified_to_var_and_types
+
+    def variable_list_repr_chunks(self, indent=0):
+        def _varname_to_id(varname: str) -> int:
+            # extract id from default variable name "v{id}"
+            if varname.startswith("v"):
+                try:
+                    return int(varname[1:])
+                except ValueError:
+                    pass
+            return 0
+
         indent_str = self.indent_str(indent)
 
         for variable, cvar_and_vartypes in sorted(
-            unified_to_var_and_types.items(), key=lambda x: _varname_to_id(x[0].name) if x[0].name else 0
+            self.unified_local_vars.items(), key=lambda x: _varname_to_id(x[0].name) if x[0].name else 0
         ):
             yield indent_str, None
 
@@ -438,7 +459,7 @@ class CFunction(CConstruct):  # pylint:disable=abstract-method
                         yield str(var_type), var_type
             yield "\n", None
 
-        if unified_to_var_and_types:
+        if self.unified_local_vars:
             yield "\n", None
 
     def c_repr_chunks(self, indent=0, asexpr=False):
@@ -495,11 +516,18 @@ class CFunction(CConstruct):  # pylint:disable=abstract-method
             yield "\n", None
 
         yield indent_str, None
+
+        # header comments (if they exist)
+        header_comments = self.codegen.kb.comments.get(self.codegen.cfunc.addr, [])
+        if header_comments:
+            header_cmt = self._line_wrap_comment("".join(header_comments))
+            yield header_cmt, None
+
         # return type
         yield self.functy.returnty.c_repr(name="").strip(" "), None
         yield " ", None
         # function name
-        if self.demangled_name:
+        if self.demangled_name and self.show_demangled_name:
             normalized_name = get_cpp_function_name(self.demangled_name, specialized=False, qualified=False)
         else:
             normalized_name = self.name
@@ -547,6 +575,25 @@ class CFunction(CConstruct):  # pylint:disable=abstract-method
         yield indent_str, None
         yield "}", brace
         yield "\n", None
+
+    @staticmethod
+    def _line_wrap_comment(comment: str, width=80) -> str:
+        lines = comment.splitlines()
+        wrapped_cmt = ""
+
+        for line in lines:
+            if len(line) < width:
+                wrapped_cmt += line + "\n"
+                continue
+
+            for i, c in enumerate(line):
+                if i % width == 0 and i != 0:
+                    wrapped_cmt += "\n"
+                wrapped_cmt += c
+
+            wrapped_cmt += "\n"
+
+        return "".join([f"// {line}\n" for line in wrapped_cmt.splitlines()])
 
 
 class CStatement(CConstruct):  # pylint:disable=abstract-method
@@ -832,12 +879,12 @@ class CIfElse(CStatement):
             yield from condition.c_repr_chunks()
             yield ")", paren
             if self.codegen.braces_on_own_lines:
-                yield "\n", self
+                yield "\n", None
                 yield indent_str, None
             else:
                 yield " ", None
             yield "{", brace
-            yield "\n", self
+            yield "\n", None
             if node is not None:
                 yield from node.c_repr_chunks(indent=indent + INDENT_DELTA)
             yield indent_str, None
@@ -858,11 +905,11 @@ class CIfElse(CStatement):
             else:
                 yield " ", None
             yield "{", brace
-            yield "\n", self
+            yield "\n", None
             yield from self.else_node.c_repr_chunks(indent=indent + INDENT_DELTA)
             yield indent_str, None
             yield "}", brace
-        yield "\n", self
+        yield "\n", None
 
 
 class CIfBreak(CStatement):
@@ -897,12 +944,12 @@ class CIfBreak(CStatement):
         else:
             yield " ", None
         yield "{", brace
-        yield "\n", self
+        yield "\n", None
         yield self.indent_str(indent=indent + INDENT_DELTA), self
         yield "break;\n", self
         yield indent_str, None
         yield "}", brace
-        yield "\n", self
+        yield "\n", None
 
 
 class CBreak(CStatement):
@@ -972,7 +1019,7 @@ class CSwitchCase(CStatement):
         else:
             yield " ", None
         yield "{", brace
-        yield "\n", self
+        yield "\n", None
 
         # cases
         for id_or_ids, case in self.cases:
@@ -996,7 +1043,7 @@ class CSwitchCase(CStatement):
 
         yield indent_str, None
         yield "}", brace
-        yield "\n", self
+        yield "\n", None
 
 
 class CAssignment(CStatement):
@@ -1072,6 +1119,7 @@ class CFunctionCall(CStatement, CExpression):
         "ret_expr",
         "tags",
         "is_expr",
+        "show_demangled_name",
     )
 
     def __init__(
@@ -1083,6 +1131,7 @@ class CFunctionCall(CStatement, CExpression):
         ret_expr=None,
         tags=None,
         is_expr: bool = False,
+        show_demangled_name=True,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -1094,6 +1143,7 @@ class CFunctionCall(CStatement, CExpression):
         self.ret_expr = ret_expr
         self.tags = tags
         self.is_expr = is_expr
+        self.show_demangled_name = show_demangled_name
 
     @property
     def prototype(self) -> Optional[SimTypeFunction]:  # TODO there should be a prototype for each callsite!
@@ -1124,7 +1174,7 @@ class CFunctionCall(CStatement, CExpression):
             yield " = ", None
 
         if self.callee_func is not None:
-            if self.callee_func.demangled_name:
+            if self.callee_func.demangled_name and self.show_demangled_name:
                 func_name = get_cpp_function_name(self.callee_func.demangled_name, specialized=False, qualified=True)
             else:
                 func_name = self.callee_func.name
@@ -1146,7 +1196,7 @@ class CFunctionCall(CStatement, CExpression):
             yield ";", self
             if not self.returning:
                 yield " /* do not return */", self
-            yield "\n", self
+            yield "\n", None
 
 
 class CReturn(CStatement):
@@ -1212,7 +1262,7 @@ class CGoto(CStatement):
         yield ";", self
         if self.codegen.comment_gotos:
             yield " */", None
-        yield "\n", self
+        yield "\n", None
 
 
 class CUnsupportedStatement(CStatement):
@@ -2053,6 +2103,7 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         show_externs=True,
         externs=None,
         const_formats=None,
+        show_demangled_name=True,
     ):
         super().__init__(flavor=flavor)
 
@@ -2113,6 +2164,7 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         self.const_formats: Dict[Any, Dict[str, Any]] = const_formats if const_formats is not None else {}
         self.externs = externs or set()
         self.show_externs = show_externs
+        self.show_demangled_name = show_demangled_name
 
         self.text = None
         self.map_pos_to_node = None
@@ -2142,6 +2194,8 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
                 self.show_local_types = value
             elif option.param == "show_externs":
                 self.show_externs = value
+            elif option.param == "show_demangled_name":
+                self.show_demangled_name = value
 
     def _analyze(self):
         self._variables_in_use = {}
@@ -2167,6 +2221,7 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
             self._variables_in_use,
             self._variable_kb.variables[self._func.addr],
             demangled_name=self._func.demangled_name,
+            show_demangled_name=self.show_demangled_name,
             codegen=self,
         )
         self.cfunc = FieldReferenceCleanup.handle(self.cfunc)
@@ -2866,6 +2921,7 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
             ret_expr=ret_expr,
             tags=stmt.tags,
             is_expr=is_expr,
+            show_demangled_name=self.show_demangled_name,
             codegen=self,
         )
 
@@ -3041,8 +3097,9 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         )
 
     def _handle_Expr_Convert(self, expr: Expr.Convert, **kwargs):
+        # width of converted type is easy
         if 64 >= expr.to_bits > 32:
-            dst_type = SimTypeLongLong()
+            dst_type: Union[SimTypeInt, SimTypeChar] = SimTypeLongLong()
         elif 32 >= expr.to_bits > 16:
             dst_type = SimTypeInt()
         elif 16 >= expr.to_bits > 8:
@@ -3054,9 +3111,20 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         else:
             raise UnsupportedNodeTypeError("Unsupported conversion bits %s." % expr.to_bits)
 
-        dst_type.signed = expr.is_signed
+        # convert child
         child = self._handle(expr.operand)
-        if getattr(child.type, "signed", False) != expr.is_signed:
+        orig_child_signed = getattr(child.type, "signed", False)
+
+        # signedness of converted type is hard
+        if expr.to_bits < expr.from_bits:
+            # very sketchy. basically a guess
+            # can we even generate signed downcasts?
+            dst_type.signed = orig_child_signed | expr.is_signed
+        else:
+            dst_type.signed = expr.is_signed
+
+        # do we need an intermediate cast?
+        if orig_child_signed != expr.is_signed and expr.to_bits > expr.from_bits:
             # this is a problem. sign-extension only happens when the SOURCE of the cast is signed
             child_ty = self.default_simtype_from_size(child.type.size // self.project.arch.byte_width, expr.is_signed)
             child = CTypeCast(None, child_ty, child, codegen=self)

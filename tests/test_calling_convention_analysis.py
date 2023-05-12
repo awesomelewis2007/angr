@@ -237,6 +237,7 @@ class TestCallingConventionAnalysis(unittest.TestCase):
         cfg = proj.analyses.CFG(data_references=True, normalize=True)
 
         func = cfg.functions.function(name="mosquitto_publish", plt=True)
+        proj.analyses.VariableRecoveryFast(func)
         cca = proj.analyses.CallingConvention(func, analyze_callsites=True)
         assert len(cca.prototype.args) == 6
 
@@ -245,6 +246,7 @@ class TestCallingConventionAnalysis(unittest.TestCase):
         proj = angr.Project(binary_path, auto_load_libs=False)
         cfg = proj.analyses.CFGFast(normalize=True, data_references=True, force_complete_scan=False)
         func = proj.kb.functions.get_by_addr(0x4046E0)
+        proj.analyses.VariableRecoveryFast(func)
         cca = proj.analyses.CallingConvention(func=func, cfg=cfg, analyze_callsites=True)
 
         assert cca.prototype is not None
@@ -291,6 +293,31 @@ class TestCallingConventionAnalysis(unittest.TestCase):
                 assert len(proto.args) == 1
                 assert isinstance(proto.args[0], SimTypeInt)
                 assert isinstance(proto.returnty, SimTypeLongLong)
+
+    def test_ls_gcc_O0_timespec_cmp(self):
+        binary_path = os.path.join(test_location, "tests", "x86_64", "decompiler", "ls_gcc_O0")
+        proj = angr.Project(binary_path, auto_load_libs=False)
+
+        proj.analyses.CFG(normalize=True)
+        proj.analyses.VariableRecoveryFast(proj.kb.functions["timespec_cmp"])
+        cca = proj.analyses.CallingConvention(proj.kb.functions["timespec_cmp"])
+
+        assert len(cca.prototype.args) == 4
+
+    def test_run_multiple_times(self):
+        binary_path = os.path.join(test_location, "tests", "x86_64", "fauxware")
+        proj = angr.Project(binary_path, auto_load_libs=False)
+
+        proj.analyses.CFG(normalize=True)
+        proj.analyses.CompleteCallingConventions(recover_variables=True)
+
+        expected_prototype = proj.kb.functions["main"].prototype
+        proj.analyses.CompleteCallingConventions(recover_variables=True)
+        assert proj.kb.functions["main"].prototype == expected_prototype
+
+        proj.analyses.CFG(normalize=True)
+        proj.analyses.CompleteCallingConventions(recover_variables=True)
+        assert proj.kb.functions["main"].prototype == expected_prototype
 
 
 if __name__ == "__main__":

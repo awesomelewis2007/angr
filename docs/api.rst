@@ -319,7 +319,6 @@ Analysis
 .. automodule:: angr.analyses.cfg.indirect_jump_resolvers.const_resolver
 .. automodule:: angr.analyses.cfg.indirect_jump_resolvers.resolver
 .. automodule:: angr.analyses.cfg.indirect_jump_resolvers
-.. automodule:: angr.analyses.cfg.cfg_utils
 .. automodule:: angr.analyses.cfg.cfg_fast_soot
 .. automodule:: angr.analyses.cfg.segment_list
 .. automodule:: angr.analyses.cdg
@@ -346,7 +345,6 @@ Analysis
 .. automodule:: angr.analyses.decompiler.structuring.phoenix
 .. automodule:: angr.analyses.decompiler
 .. automodule:: angr.analyses.decompiler.ail_simplifier
-.. automodule:: angr.analyses.decompiler.ailblock_walker
 .. automodule:: angr.analyses.decompiler.ailgraph_walker
 .. automodule:: angr.analyses.decompiler.block_simplifier
 .. automodule:: angr.analyses.decompiler.callsite_maker
@@ -443,6 +441,7 @@ Analysis
 .. automodule:: angr.analyses.variable_recovery.engine_ail
 .. automodule:: angr.analyses.variable_recovery.engine_vex
 .. automodule:: angr.analyses.variable_recovery.engine_base
+.. automodule:: angr.analyses.variable_recovery.irsb_scanner
 .. automodule:: angr.analyses.variable_recovery
 .. automodule:: angr.analyses.typehoon.lifter
 .. automodule:: angr.analyses.typehoon.simple_solver

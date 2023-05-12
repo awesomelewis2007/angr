@@ -1,3 +1,4 @@
+# ruff: noqa: F401
 import functools
 import sys
 import contextlib
@@ -7,6 +8,7 @@ from typing import TYPE_CHECKING, TypeVar, Type, Generic, Callable, Optional
 
 import logging
 import time
+import typing
 
 from rich import progress
 
@@ -17,6 +19,36 @@ if TYPE_CHECKING:
     from ..knowledge_base import KnowledgeBase
     from ..project import Project
     from typing_extensions import ParamSpec
+    from .identifier import Identifier
+    from .callee_cleanup_finder import CalleeCleanupFinder
+    from .vsa_ddg import VSA_DDG
+    from .cdg import CDG
+    from .bindiff import BinDiff
+    from .cfg import CFGEmulated
+    from .cfg import CFBlanket
+    from .cfg import CFG
+    from .cfg import CFGFast
+    from .static_hooker import StaticHooker
+    from .ddg import DDG
+    from .congruency_check import CongruencyCheck
+    from .reassembler import Reassembler
+    from .backward_slice import BackwardSlice
+    from .binary_optimizer import BinaryOptimizer
+    from .vfg import VFG
+    from .loopfinder import LoopFinder
+    from .disassembly import Disassembly
+    from .veritesting import Veritesting
+    from .code_tagging import CodeTagging
+    from .boyscout import BoyScout
+    from .variable_recovery import VariableRecoveryFast
+    from .variable_recovery import VariableRecovery
+    from .reaching_definitions import ReachingDefinitionsAnalysis
+    from .complete_calling_conventions import CompleteCallingConventionsAnalysis
+    from .decompiler.clinic import Clinic
+    from .propagator import PropagatorAnalysis
+    from .calling_convention import CallingConventionAnalysis
+    from .decompiler.decompiler import Decompiler
+    from .xrefs import XRefsAnalysis
 
     AnalysisParams = ParamSpec("AnalysisParams")
 
@@ -68,7 +100,7 @@ class AnalysisLogEntry:
 A = TypeVar("A", bound="Analysis")
 
 
-class AnalysesHub(PluginVendor):
+class AnalysesHub(PluginVendor[A]):
     """
     This class contains functions for all the registered and runnable analyses,
     """
@@ -92,8 +124,48 @@ class AnalysesHub(PluginVendor):
         s, self.project = sd
         super().__setstate__(s)
 
-    def __getitem__(self, plugin_cls: "Type[A]") -> "AnalysisFactory[A]":
+    def __getitem__(self, plugin_cls: Type[A]) -> "AnalysisFactory[A]":
         return AnalysisFactory(self.project, plugin_cls)
+
+
+class KnownAnalysesPlugin(typing.Protocol):
+    Identifier: "Type[Identifier]"
+    CalleeCleanupFinder: "Type[CalleeCleanupFinder]"
+    VSA_DDG: "Type[VSA_DDG]"
+    CDG: "Type[CDG]"
+    BinDiff: "Type[BinDiff]"
+    CFGEmulated: "Type[CFGEmulated]"
+    CFB: "Type[CFBlanket]"
+    CFBlanket: "Type[CFBlanket]"
+    CFG: "Type[CFG]"
+    CFGFast: "Type[CFGFast]"
+    StaticHooker: "Type[StaticHooker]"
+    DDG: "Type[DDG]"
+    CongruencyCheck: "Type[CongruencyCheck]"
+    Reassembler: "Type[Reassembler]"
+    BackwardSlice: "Type[BackwardSlice]"
+    BinaryOptimizer: "Type[BinaryOptimizer]"
+    VFG: "Type[VFG]"
+    LoopFinder: "Type[LoopFinder]"
+    Disassembly: "Type[Disassembly]"
+    Veritesting: "Type[Veritesting]"
+    CodeTagging: "Type[CodeTagging]"
+    BoyScout: "Type[BoyScout]"
+    VariableRecoveryFast: "Type[VariableRecoveryFast]"
+    VariableRecovery: "Type[VariableRecovery]"
+    ReachingDefinitions: "Type[ReachingDefinitionsAnalysis]"
+    CompleteCallingConventions: "Type[CompleteCallingConventionsAnalysis]"
+    Clinic: "Type[Clinic]"
+    Propagator: "Type[PropagatorAnalysis]"
+    CallingConvention: "Type[CallingConventionAnalysis]"
+    Decompiler: "Type[Decompiler]"
+    XRefs: "Type[XRefsAnalysis]"
+
+
+class AnalysesHubWithDefault(AnalysesHub, KnownAnalysesPlugin):
+    """
+    This class has type-hinting for all built-in analyses plugin
+    """
 
 
 class AnalysisFactory(Generic[A]):
@@ -162,10 +234,10 @@ class Analysis:
     :ivar progress.Progress _progressbar: The progress bar object.
     """
 
-    project: "Project" = None
-    kb: "KnowledgeBase" = None
-    _fail_fast = None
-    _name = None
+    project: "Project"
+    kb: "KnowledgeBase"
+    _fail_fast: bool
+    _name: str
     errors = []
     named_errors = defaultdict(list)
     _progress_callback = None

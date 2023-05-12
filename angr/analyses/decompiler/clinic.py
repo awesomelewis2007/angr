@@ -29,7 +29,6 @@ from .. import Analysis, register_analysis
 from ..cfg.cfg_base import CFGBase
 from ..reaching_definitions import ReachingDefinitionsAnalysis
 from .ailgraph_walker import AILGraphWalker, RemoveNodeNotice
-from .ailblock_walker import AILBlockWalker
 from .optimization_passes import get_default_optimization_passes, OptimizationPassStage
 
 if TYPE_CHECKING:
@@ -275,17 +274,22 @@ class Clinic(Analysis):
             cache=block_simplification_cache,
         )
 
+        # Run simplification passes
+        self._update_progress(65.0, text="Running simplifications 2")
+        ail_graph = self._run_simplification_passes(ail_graph, stage=OptimizationPassStage.AFTER_GLOBAL_SIMPLIFICATION)
+
         # Simplify the entire function for the third time
-        self._update_progress(65.0, text="Simplifying function 3")
+        self._update_progress(70.0, text="Simplifying function 3")
         self._simplify_function(
             ail_graph,
             remove_dead_memdefs=self._remove_dead_memdefs,
             stack_arg_offsets=stackarg_offsets,
             unify_variables=True,
+            narrow_expressions=True,
             fold_callexprs_into_conditions=self._fold_callexprs_into_conditions,
         )
 
-        self._update_progress(68.0, text="Simplifying blocks 4")
+        self._update_progress(72.0, text="Simplifying blocks 4")
         ail_graph = self._simplify_blocks(
             ail_graph,
             remove_dead_memdefs=self._remove_dead_memdefs,
@@ -294,12 +298,8 @@ class Clinic(Analysis):
         )
 
         # Make function arguments
-        self._update_progress(70.0, text="Making argument list")
+        self._update_progress(75.0, text="Making argument list")
         arg_list = self._make_argument_list()
-
-        # Run simplification passes
-        self._update_progress(75.0, text="Running simplifications 2")
-        ail_graph = self._run_simplification_passes(ail_graph, stage=OptimizationPassStage.AFTER_GLOBAL_SIMPLIFICATION)
 
         # Recover variables on AIL blocks
         self._update_progress(80.0, text="Recovering variables")
@@ -373,34 +373,43 @@ class Clinic(Analysis):
         """
 
         for node in self.function.transition_graph:
-            if not isinstance(node, Function):
+            if (
+                isinstance(node, BlockNode)
+                and node.addr != self.function.addr
+                and self.kb.functions.contains_addr(node.addr)
+            ):
+                # tail jumps
+                target_func = self.kb.functions.get_by_addr(node.addr)
+            elif isinstance(node, Function):
+                target_func = node
+            else:
                 continue
 
             # case 0: the calling convention and prototype are available
-            if node.calling_convention is not None and node.prototype is not None:
+            if target_func.calling_convention is not None and target_func.prototype is not None:
                 continue
 
             call_sites = []
             for pred in self.function.transition_graph.predecessors(node):
                 call_sites.append(pred)
             # case 1: calling conventions and prototypes are available at every single call site
-            if all(self.kb.callsite_prototypes.has_prototype(callsite.addr) for callsite in call_sites):
+            if call_sites and all(self.kb.callsite_prototypes.has_prototype(callsite.addr) for callsite in call_sites):
                 continue
 
             # case 2: the callee is a SimProcedure
-            if node.is_simprocedure:
-                cc = self.project.analyses.CallingConvention(node)
+            if target_func.is_simprocedure:
+                cc = self.project.analyses.CallingConvention(target_func)
                 if cc.cc is not None and cc.prototype is not None:
-                    node.calling_convention = cc.cc
-                    node.prototype = cc.prototype
+                    target_func.calling_convention = cc.cc
+                    target_func.prototype = cc.prototype
                     continue
 
             # case 3: the callee is a PLT function
-            if node.is_plt:
-                cc = self.project.analyses.CallingConvention(node)
+            if target_func.is_plt:
+                cc = self.project.analyses.CallingConvention(target_func)
                 if cc.cc is not None and cc.prototype is not None:
-                    node.calling_convention = cc.cc
-                    node.prototype = cc.prototype
+                    target_func.calling_convention = cc.cc
+                    target_func.prototype = cc.prototype
                     continue
 
             # case 4: fall back to call site analysis
@@ -905,7 +914,7 @@ class Clinic(Analysis):
                 block.statements[stmt_idx] = new_stmt
 
         def _handler(block):
-            walker = AILBlockWalker()
+            walker = ailment.AILBlockWalker()
             # we don't need to handle any statement besides Returns
             walker.stmt_handlers.clear()
             walker.expr_handlers.clear()
@@ -1060,7 +1069,7 @@ class Clinic(Analysis):
             stmt_type = type(stmt)
             if stmt_type is ailment.Stmt.Store:
                 # find a memory variable
-                mem_vars = variable_manager.find_variables_by_atom(block.addr, stmt_idx, stmt)
+                mem_vars = variable_manager.find_variables_by_atom(block.addr, stmt_idx, stmt, block_idx=block.idx)
                 if len(mem_vars) == 1:
                     stmt.variable, stmt.offset = next(iter(mem_vars))
                 else:
@@ -1121,7 +1130,7 @@ class Clinic(Analysis):
 
         if type(expr) is ailment.Expr.Register:
             # find a register variable
-            reg_vars = variable_manager.find_variables_by_atom(block.addr, stmt_idx, expr)
+            reg_vars = variable_manager.find_variables_by_atom(block.addr, stmt_idx, expr, block_idx=block.idx)
             final_reg_vars = set()
             if len(reg_vars) > 1:
                 # take phi variables
@@ -1136,7 +1145,7 @@ class Clinic(Analysis):
                 expr.variable_offset = offset
 
         elif type(expr) is ailment.Expr.Load:
-            variables = variable_manager.find_variables_by_atom(block.addr, stmt_idx, expr)
+            variables = variable_manager.find_variables_by_atom(block.addr, stmt_idx, expr, block_idx=block.idx)
             if len(variables) == 0:
                 # if it's a constant addr, maybe it's referencing an extern location
                 base_addr, offset = self.parse_variable_addr(expr.addr)
@@ -1169,7 +1178,7 @@ class Clinic(Analysis):
                 expr.variable_offset = offset
 
         elif type(expr) is ailment.Expr.BinaryOp:
-            variables = variable_manager.find_variables_by_atom(block.addr, stmt_idx, expr)
+            variables = variable_manager.find_variables_by_atom(block.addr, stmt_idx, expr, block_idx=block.idx)
             if len(variables) >= 1:
                 var, offset = next(iter(variables))
                 expr.variable = var
@@ -1183,7 +1192,7 @@ class Clinic(Analysis):
                 )
 
         elif type(expr) is ailment.Expr.UnaryOp:
-            variables = variable_manager.find_variables_by_atom(block.addr, stmt_idx, expr)
+            variables = variable_manager.find_variables_by_atom(block.addr, stmt_idx, expr, block_idx=block.idx)
             if len(variables) >= 1:
                 var, offset = next(iter(variables))
                 expr.variable = var
@@ -1195,7 +1204,7 @@ class Clinic(Analysis):
             self._link_variables_on_expr(variable_manager, global_variables, block, stmt_idx, stmt, expr.operand)
 
         elif type(expr) is ailment.Expr.ITE:
-            variables = variable_manager.find_variables_by_atom(block.addr, stmt_idx, expr)
+            variables = variable_manager.find_variables_by_atom(block.addr, stmt_idx, expr, block_idx=block.idx)
             if len(variables) >= 1:
                 var, offset = next(iter(variables))
                 expr.variable = var
@@ -1206,7 +1215,7 @@ class Clinic(Analysis):
                 self._link_variables_on_expr(variable_manager, global_variables, block, stmt_idx, stmt, expr.iftrue)
 
         elif isinstance(expr, ailment.Expr.BasePointerOffset):
-            variables = variable_manager.find_variables_by_atom(block.addr, stmt_idx, expr)
+            variables = variable_manager.find_variables_by_atom(block.addr, stmt_idx, expr, block_idx=block.idx)
             if len(variables) >= 1:
                 var, offset = next(iter(variables))
                 expr.variable = var
@@ -1317,7 +1326,7 @@ class Clinic(Analysis):
     @staticmethod
     def _collect_externs(ail_graph, variable_kb):
         global_vars = variable_kb.variables.global_manager.get_variables()
-        walker = AILBlockWalker()
+        walker = ailment.AILBlockWalker()
         variables = set()
 
         def handle_expr(
@@ -1335,12 +1344,12 @@ class Clinic(Analysis):
             ]:
                 if v and v in global_vars:
                     variables.add(v)
-            return AILBlockWalker._handle_expr(walker, expr_idx, expr, stmt_idx, stmt, block)
+            return ailment.AILBlockWalker._handle_expr(walker, expr_idx, expr, stmt_idx, stmt, block)
 
         def handle_Store(stmt_idx: int, stmt: ailment.statement.Store, block: Optional[ailment.Block]):
             if stmt.variable and stmt.variable in global_vars:
                 variables.add(stmt.variable)
-            return AILBlockWalker._handle_Store(walker, stmt_idx, stmt, block)
+            return ailment.AILBlockWalker._handle_Store(walker, stmt_idx, stmt, block)
 
         walker.stmt_handlers[ailment.statement.Store] = handle_Store
         walker._handle_expr = handle_expr

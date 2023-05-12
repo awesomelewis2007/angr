@@ -1,5 +1,5 @@
 # pylint:disable=wrong-import-position,wrong-import-order
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Union
 import logging
 from collections import defaultdict
 
@@ -16,7 +16,7 @@ from ...errors import AngrVariableRecoveryError, SimEngineError
 from ...knowledge_plugins import Function
 from ...sim_variable import SimStackVariable, SimRegisterVariable, SimVariable, SimMemoryVariable
 from ...engines.vex.claripy.irop import vexop_to_simop
-from ..forward_analysis import ForwardAnalysis, FunctionGraphVisitor
+from angr.analyses import ForwardAnalysis, visitors
 from ..typehoon.typevars import Equivalence, TypeVariable
 from .variable_recovery_base import VariableRecoveryBase, VariableRecoveryStateBase
 from .engine_vex import SimEngineVRVEX
@@ -234,7 +234,7 @@ class VariableRecoveryFast(ForwardAnalysis, VariableRecoveryBase):  # pylint:dis
 
     def __init__(
         self,
-        func: Function,
+        func: Union[Function, str, int],
         func_graph: Optional[networkx.DiGraph] = None,
         max_iterations: int = 2,
         low_priority=False,
@@ -242,6 +242,8 @@ class VariableRecoveryFast(ForwardAnalysis, VariableRecoveryBase):  # pylint:dis
         func_args: Optional[List[SimVariable]] = None,
         store_live_variables=False,
     ):
+        if not isinstance(func, Function):
+            func = self.kb.functions[func]
         func_graph_with_calls = func_graph or func.transition_graph
         call_info = defaultdict(list)
         for node_from, node_to, data in func_graph_with_calls.edges(data=True):
@@ -251,7 +253,7 @@ class VariableRecoveryFast(ForwardAnalysis, VariableRecoveryBase):  # pylint:dis
                 except KeyError:
                     pass
 
-        function_graph_visitor = FunctionGraphVisitor(func, graph=func_graph)
+        function_graph_visitor = visitors.FunctionGraphVisitor(func, graph=func_graph)
 
         # Make sure the function is not empty
         if not func.block_addrs_set or func.startpoint is None:
@@ -392,9 +394,11 @@ class VariableRecoveryFast(ForwardAnalysis, VariableRecoveryBase):  # pylint:dis
         if type(node) is ailment.Block:
             # AIL mode
             block = node
+            block_key = node.addr, node.idx
         else:
             # VEX mode, get the block again
             block = self.project.factory.block(node.addr, node.size, opt_level=1, cross_insn_opt=False)
+            block_key = node.addr
 
         # if node.addr in self._instates:
         #     prev_state: VariableRecoveryFastState = self._instates[node.addr]
@@ -407,15 +411,17 @@ class VariableRecoveryFast(ForwardAnalysis, VariableRecoveryBase):  # pylint:dis
 
         state = state.copy()
         state.block_addr = node.addr
+        if isinstance(node, ailment.Block):
+            state.block_idx = node.idx
         # self._instates[node.addr] = state
 
-        if self._node_iterations[node.addr] >= self._max_iterations:
+        if self._node_iterations[block_key] >= self._max_iterations:
             l.debug("Skip node %#x as we have iterated %d times on it.", node.addr, self._node_iterations[node.addr])
             return False, state
 
         self._process_block(state, block)
 
-        self._node_iterations[node.addr] += 1
+        self._node_iterations[block_key] += 1
         self.type_constraints |= state.type_constraints
         for var, typevar in state.typevars._typevars.items():
             self.var_to_typevars[var].add(typevar)
@@ -425,7 +431,7 @@ class VariableRecoveryFast(ForwardAnalysis, VariableRecoveryBase):  # pylint:dis
                 self.ret_val_size = state.ret_val_size
 
         state.downsize()
-        self._outstates[node.addr] = state
+        self._outstates[block_key] = state
 
         return True, state
 
